@@ -11,19 +11,29 @@ import "Contracts/Modulo_MultiContract/ModuloRaffle721A.sol";
 import "@chainlink/contracts/src/v0.8/interfaces/VRFCoordinatorV2Interface.sol";
 import "@chainlink/contracts/src/v0.8/VRFConsumerBaseV2.sol";
 
-contract ModuloDeployer is Ownable, VRFConsumerBaseV2 {
+contract ModuloDeployer is Ownable, VRFConsumerBaseV2, ReentrancyGuard {
 
 struct RaffleTracker {
 
-    IERC721A AddressInstance;
     ModuloRaffle721A RaffleAddress;
-    uint256 GameNo;
+    address Winner;
     address PrizeNFTAddress;
     uint256 PrizeNFTID;
-    address Winner;
+    uint256 GameNo;
     bool    GameComplete;
 
 }
+
+struct PrizeVault {
+
+    address PrizeNFTAddress;
+    uint256 PrizeNFTID;
+
+}
+
+    mapping(uint256 => RaffleTracker) public RaffleTrackerMapper;
+    mapping(address => PrizeVault[])  public PrizeVaultMapper;
+
 /// Chainlink = start
     VRFCoordinatorV2Interface COORDINATOR;
     uint64 s_subscriptionId = 2624;
@@ -34,22 +44,20 @@ struct RaffleTracker {
     uint32   public numWords =  1;
     uint256  public s_requestId;
     uint256  public RandomNumber;
-    uint     public fakerandom = 115792089237316195423570985008687907853269984665;
 /////// Chainlink VRF - End
 
 /// Game Settings
-    uint     public price_d        = 1 ether;
+    uint     public price_d        = 0.01 ether;
     uint     public maxPerFree_d   = 1; 
     uint     public maxPerWallet_d = 10; 
-    uint     public totalFree_d    = 250; 
-    uint     public maxSupply_d    = 250;
-    uint     public BlockDelay_d   = 10000;
+    uint     public totalFree_d    = 10; 
+    uint     public maxSupply_d    = 10;
+    uint     public BlockDelay_d   = 1000;
 
 
-/// Reference to current game and past games
+/// Reference to current game 
     uint256       public currentGameNo; 
-    RaffleTracker public CurrentRaffle;
-    mapping(uint256 => RaffleTracker) public RaffleTrackerMapper;
+    RaffleTracker public CurrentGame;
 
     constructor()
     VRFConsumerBaseV2(vrfCoordinator) {
@@ -63,8 +71,8 @@ struct RaffleTracker {
                 uint256 PrizeNFTID_) external onlyOwner  {
 
 
-        require(CurrentRaffle.GameNo < 1 || 
-                CurrentRaffle.GameComplete == true, "Game in Progress");
+        require(CurrentGame.GameNo < 1 || 
+                CurrentGame.GameComplete == true, "Game in Progress");
 
 
         IERC721A PrizeNFT = IERC721A(PrizeNFTAddress_);
@@ -76,8 +84,8 @@ struct RaffleTracker {
         /// Do we need to save an old raffle?
         if(currentGameNo > 0){
 
-            RaffleTrackerMapper[currentGameNo] = CurrentRaffle;
-            delete CurrentRaffle;
+            RaffleTrackerMapper[currentGameNo] = CurrentGame;
+            delete CurrentGame;
 
         }
 
@@ -85,7 +93,7 @@ struct RaffleTracker {
         currentGameNo = currentGameNo + 1;
 
         /// create a new Raffle
-         CurrentRaffle.RaffleAddress = new ModuloRaffle721A(
+         CurrentGame.RaffleAddress = new ModuloRaffle721A(
             maxSupply_d,
             totalFree_d,
             maxPerWallet_d,
@@ -97,10 +105,9 @@ struct RaffleTracker {
         );
 
         /// Setup Raffle Details
-        CurrentRaffle.GameNo          = currentGameNo;
-        CurrentRaffle.PrizeNFTAddress = PrizeNFTAddress_;
-        CurrentRaffle.PrizeNFTID      = PrizeNFTID_;
-        CurrentRaffle.AddressInstance = PrizeNFT;
+        CurrentGame.GameNo          = currentGameNo;
+        CurrentGame.PrizeNFTAddress = PrizeNFTAddress_;
+        CurrentGame.PrizeNFTID      = PrizeNFTID_;
 
     }
 
@@ -112,7 +119,7 @@ struct RaffleTracker {
                 uint _maxSupply,
                 uint _BlockDelay) external onlyOwner {
 
-        require(CurrentRaffle.GameComplete == true, "Game in Progress");
+        require(CurrentGame.GameComplete == true, "Game in Progress");
 
         price_d        = _price;
         maxPerFree_d   = _maxPerFree;
@@ -127,6 +134,10 @@ struct RaffleTracker {
 
     function call_Chainlink()  external onlyOwner   {
 
+        bool isSoldout = Check_Soldout();
+
+        require(isSoldout == true, "Raffle Not sold out yet");
+
         s_requestId = COORDINATOR.requestRandomWords(
         keyHash,
         s_subscriptionId,
@@ -134,6 +145,12 @@ struct RaffleTracker {
         callbackGasLimit,
         numWords
         );
+
+    }
+
+    function Check_Soldout() public  view returns (bool) {
+        bool isSoldout = CurrentGame.RaffleAddress.Check_Soldout();
+        return isSoldout;
 
     }
 
@@ -146,22 +163,66 @@ struct RaffleTracker {
     function PickWinner()  private  {
 
         uint256 WinningTokenID =  (RandomNumber % maxSupply_d) + 1;
-        CurrentRaffle.Winner = CurrentRaffle.AddressInstance.ownerOf(WinningTokenID);
-        require(CurrentRaffle.Winner != address(0), "Error getting Winner");
-        CurrentRaffle.AddressInstance.transferFrom(address(this), CurrentRaffle.Winner, CurrentRaffle.PrizeNFTID);
-        CurrentRaffle.GameComplete = true;
+        CurrentGame.Winner = CurrentGame.RaffleAddress.ownerOf(WinningTokenID);
+        require(CurrentGame.Winner != address(0), "Error getting Winner");
+ 
+        /// Update Prize Tracker with winner
+        PrizeVault memory Prize;
+
+        Prize.PrizeNFTAddress = CurrentGame.PrizeNFTAddress;
+        Prize.PrizeNFTID = CurrentGame.PrizeNFTID;
+
+        /// Add to a list of winning NFT's
+        PrizeVaultMapper[CurrentGame.Winner].push(Prize);
+
+        // Current Raffle is Complete
+        CurrentGame.GameComplete = true;
+            
+    }
+
+    function is_Winner() public view returns (bool) {
+
+        PrizeVault[] memory Prizes = PrizeVaultMapper[msg.sender];
+
+        if(Prizes.length > 0){
+            return true;
+        } else {
+            return false;
+        }
 
     }
 
+    function Withdraw_Prize() public nonReentrant {
+
+        require(is_Winner() == true, "Not a Winner");
+        PrizeVault[] storage Prizes = PrizeVaultMapper[msg.sender];
+
+        _withdraw_NFT(Prizes[Prizes.length - 1].PrizeNFTAddress, Prizes[Prizes.length - 1].PrizeNFTID);
+        Prizes.pop();
+    
+    }
+
+    function _withdraw_NFT(address NFTAddress_, uint256 NFTID_) private {
+
+        IERC721A PrizeNFT = IERC721A(NFTAddress_);
+
+        PrizeNFT.transferFrom(
+                    address(this),
+                    msg.sender,
+                    NFTID_);
 
 
-    function withdraw_Funds() external onlyOwner {
+    }
+
+/// Owner Withdraw functions
+
+    function withdraw_Funds() external onlyOwner nonReentrant {
         (bool success, ) = msg.sender.call{value: address(this).balance}("");
         require(success, "Transfer failed.");
     }
 
-    function withdraw_Prize_NFT() external onlyOwner {
-        CurrentRaffle.AddressInstance.transferFrom(address(this), msg.sender, CurrentRaffle.PrizeNFTID);
+    function withdraw_NFT(address NFTAddress_, uint256 NFTID_) external onlyOwner nonReentrant {
+            _withdraw_NFT(NFTAddress_, NFTID_);
 
     }
 

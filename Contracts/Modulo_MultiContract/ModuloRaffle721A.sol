@@ -78,7 +78,7 @@ contract ModuloRaffle721A is ERC721A, Ownable, ReentrancyGuard {
         _safeMint(msg.sender, count);
 
         /// Soldout flag
-        if(totalSupply() == maxSupply){
+        if(_totalMinted() == maxSupply){
             MinDrawBlock = block.number + BlockDelay;
             Soldout = true;
         }
@@ -100,7 +100,7 @@ contract ModuloRaffle721A is ERC721A, Ownable, ReentrancyGuard {
         _safeMint(msg.sender, count);
 
         /// Soldout flag
-        if(totalSupply() == maxSupply){
+        if(_totalMinted() == maxSupply){
             MinDrawBlock = block.number + BlockDelay;
             Soldout = true;
         }
@@ -130,6 +130,11 @@ contract ModuloRaffle721A is ERC721A, Ownable, ReentrancyGuard {
         return startTokenID;
     }
 
+    function Check_Soldout() external  view returns (bool) {
+        return Soldout;
+
+    }
+
 
 ///// Admin Methods
 
@@ -146,6 +151,7 @@ contract ModuloRaffle721A is ERC721A, Ownable, ReentrancyGuard {
         (bool success, ) = msg.sender.call{value: address(this).balance}("");
         require(success, "Transfer failed.");
     }
+
 
 
 }
